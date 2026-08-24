@@ -205,12 +205,10 @@ interface LiveEntry {
   readonly modelContent: MessageContent;
   readonly submittedPlacement: MessagePlacement;
   readonly placement: MessagePlacement;
-  readonly disposition: 'steering' | 'followup';
   readonly generation: number;
   readonly residency: RuntimeHostResidency;
   durableAdmittedAt?: number;
   state: 'queued' | 'in_flight' | 'released';
-  leaseId?: string;
 }
 
 interface BoundRun extends RuntimeMessageRunIdentity {
@@ -830,7 +828,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
             (entry) => entry.messageId === durableAdmission.messageId,
           );
           if (existing) {
-            if (existing.disposition !== durableAdmission.disposition) {
+            if (dispositionFromPlacement(existing.placement) !== durableAdmission.disposition) {
               throw new RuntimeMessageAuthorityInvariantError(
                 'Durable message admission collided with a different queue disposition',
               );
@@ -957,7 +955,6 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           modelContent: prepared.content,
           submittedPlacement: input.placement,
           placement: input.placement,
-          disposition,
           generation: state.generation,
           residency,
           durableAdmittedAt: durableAdmittedAt ?? durableAdmission?.admittedAt,
@@ -1244,7 +1241,6 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     const promotedEntry: LiveEntry = {
       ...entry,
       placement: 'current_turn',
-      disposition: 'steering',
     };
     const remainingFollowups = state.followup.filter(
       (_queued, queuedIndex) => queuedIndex !== index,
@@ -1678,7 +1674,6 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     const leases = entries.map((entry): SteeringLease => {
       const leaseId = this.#createId();
       entry.state = 'in_flight';
-      entry.leaseId = leaseId;
       state.inFlight.set(leaseId, entry);
       return {
         id: leaseId,
@@ -1715,7 +1710,6 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       const entry = state.inFlight.get(leaseId);
       if (!entry) continue;
       state.inFlight.delete(leaseId);
-      entry.leaseId = undefined;
       if (
         state.phase === 'open' &&
         run.generation === state.generation &&
@@ -1906,7 +1900,6 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   #releaseEntry(entry: LiveEntry): void {
     if (entry.state === 'released') return;
     entry.state = 'released';
-    entry.leaseId = undefined;
     entry.residency.release();
   }
 }
@@ -2028,8 +2021,12 @@ function sourceFromEntry(entry: LiveEntry): RootFollowupSource {
       ? { submittedPlacement: entry.submittedPlacement }
       : {}),
     placement: entry.placement,
-    disposition: entry.disposition,
+    disposition: dispositionFromPlacement(entry.placement),
   };
+}
+
+function dispositionFromPlacement(placement: MessagePlacement): 'steering' | 'followup' {
+  return placement === 'current_turn' ? 'steering' : 'followup';
 }
 
 function pendingMessageSource(entry: PendingMessageAdmission): RootTurnSourceMessage {
